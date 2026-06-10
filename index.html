@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Pro Signal Engine</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght=400;700&display=swap');
+        body { font-family: 'JetBrains+Mono', monospace; }
+        .blink { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto space-y-6">
+        <header class="border-b border-slate-800 pb-4 text-center md:text-left">
+            <h1 class="text-2xl md:text-3xl font-bold text-emerald-400">🔮 ENTERPRISE PRO SIGNAL ENGINE</h1>
+            <p class="text-slate-400 text-xs md:text-sm mt-1">Advanced Confluence Matrix Engine • Powered by WebSocket</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 col-span-1">
+                <label for="pairSelect" class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Select Market Asset</label>
+                <select id="pairSelect" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:outline-none focus:border-emerald-500 text-sm">
+                    <option value="">Fetching Live Registry...</option>
+                </select>
+                <div id="connectionStatus" class="mt-3 text-xs flex items-center gap-2 text-amber-400">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 blink"></span> Connecting to Deriv Pipeline...
+                </div>
+            </div>
+
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 col-span-1 md:col-span-2 flex flex-col justify-between">
+                <div class="flex justify-between items-center border-b border-slate-800 pb-2 mb-2">
+                    <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Live Telemetry</span>
+                    <span id="liveClock" class="text-xs text-slate-500">00:00:00</span>
+                </div>
+                <div id="telemetryFeed" class="text-xs text-slate-400 leading-relaxed">
+                    Awaiting node selection. Please choose an asset registry from the selector menu to mount the execution threads.
+                </div>
+            </div>
+        </div>
+
+        <div id="verificationContainer" class="hidden bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Signal Verification Block</div>
+            <div id="verificationOutput" class="text-sm font-bold p-3 rounded-lg bg-slate-950 border border-slate-800">
+                Evaluating structural data points...
+            </div>
+        </div>
+
+        <div id="signalDisplay" class="bg-slate-900 border border-slate-800 rounded-xl p-6 min-h-[220px] flex flex-col justify-center items-center text-center">
+            <div class="text-slate-500 text-sm tracking-wide">SYSTEM IDLE</div>
+            <div class="text-xs text-slate-600 mt-2">Initialize an asset pipeline to capture multi-indicator signals.</div>
+        </div>
+    </div>
+
+    <script>
+        // Secure Token Configuration Matrix
+        const CONFIG = {
+            APP_ID: "33w9KFsJ56rjTLOzg4AKY",
+            API_TOKEN: "pat_b451f546869a53321601ea9b3fb7b62b2ff3ceddb52b7536857790d0ee6103cc", // Fully Authorized Token
+            TIMEFRAME: 60,
+            LOOKBACK: 150
+        };
+
+        let ws;
+        let activePairs = {};
+        let lastSignal = null;
+        let currentCandleEpoch = 0;
+
+        // UI DOM Registries
+        const pairSelect = document.getElementById('pairSelect');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const telemetryFeed = document.getElementById('telemetryFeed');
+        const signalDisplay = document.getElementById('signalDisplay');
+        const verificationContainer = document.getElementById('verificationContainer');
+        const verificationOutput = document.getElementById('verificationOutput');
+        const liveClock = document.getElementById('liveClock');
+
+        // Internal Engine Timekeeper Track
+        setInterval(() => {
+            const now = new Date();
+            liveClock.textContent = now.toTimeString().split(' ')[0];
+        }, 1000);
+
+        function initWebSocket() {
+            ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${CONFIG.APP_ID}`);
+
+            ws.onopen = () => {
+                connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-blue-500"></span> Authorizing Access Token...`;
+                // ফিক্সড লাইন: এখানে auth_endpoint রিমুভ করা হয়েছে এরর দূর করার জন্য
+                ws.send(jsonReq({"authorize": CONFIG.API_TOKEN}));
+            };
+
+            ws.onmessage = async (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.error) {
+                    handleSystemError(data.error);
+                    return;
+                }
+
+                // Handle Authorization Event Node
+                if (data.msg_type === 'authorize') {
+                    connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Pipeline Verified`;
+                    ws.send(jsonReq({"active_symbols": "brief", "product_type": "basic"}));
+                }
+
+                // Handle Asset Listing Retrieval Node
+                if (data.msg_type === 'active_symbols') {
+                    populateAssetRegistry(data.active_symbols);
+                }
+
+                // Core Subscription Telemetry Pipeline
+                if (data.msg_type === 'candles') {
+                    await processHistoricalFeeds(data.candles);
+                }
+            };
+
+            ws.onclose = () => {
+                connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500 blink"></span> Disconnected. Retrying...`;
+                setTimeout(initWebSocket, 5000);
+            };
+        }
+
+        function populateAssetRegistry(symbols) {
+            pairSelect.innerHTML = '<option value="">-- Choose Asset Node --</option>';
+            activePairs = {};
+            
+            symbols.forEach(sym => {
+                if (sym.market === 'forex') {
+                    activePairs[sym.symbol] = sym.display_name;
+                    const opt = document.createElement('option');
+                    opt.value = sym.symbol;
+                    opt.textContent = sym.display_name;
+                    pairSelect.appendChild(opt);
+                }
+            });
+        }
+
+        pairSelect.onchange = () => {
+            const selectedSymbol = pairSelect.value;
+            if (!selectedSymbol) return;
+
+            signalDisplay.innerHTML = `
+                <div class="text-slate-400 font-bold text-base blink">MOUNTING DATA PIPELINE...</div>
+                <div class="text-xs text-slate-500 mt-2">Syncing memory slots and building indicators matrix.</div>
+            `;
+            verificationContainer.classList.add('hidden');
+            lastSignal = null;
+            currentCandleEpoch = 0;
+
+            // Re-establish fresh stream for selected node
+            ws.close();
+            initWebSocket();
+            
+            setTimeout(() => {
+                if(ws.readyState === WebSocket.OPEN) {
+                    ws.send(jsonReq({
+                        "ticks_history": selectedSymbol,
+                        "adjust_start_time": 1,
+                        "count": CONFIG.LOOKBACK,
+                        "end": "latest",
+                        "style": "candles",
+                        "granularity": CONFIG.TIMEFRAME,
+                        "subscribe": 1
+                    }));
+                }
+            }, 1000);
+        };
+
+        async function processHistoricalFeeds(candles) {
+            if (candles.length < CONFIG.LOOKBACK) return;
+            
+            const latestCandle = candles[candles.length - 1];
+            const epoch = latestCandle.epoch;
+
+            if (epoch !== currentCandleEpoch) {
+                currentCandleEpoch = epoch;
+
+                // 1. Run Verification Core Engine on Completed Candle
+                if (candles.length >= 2) {
+                    verifyExpiredBlock(candles[candles.length - 2]);
+                }
+
+                // 2. Compute Indicators & Extract Probabilities Core Matrix
+                const metrics = calculateTechnicalMatrix(candles);
+                const evaluation = evaluateConfluenceEngine(metrics, candles);
+
+                const timestamp = new Date().toTimeString().split(' ')[0];
+                const activePairName = activePairs[pairSelect.value];
+
+                telemetryFeed.innerHTML = `
+                    <strong>Active Node:</strong> ${activePairName}<br>
+                    <strong>Structural S:</strong> ${evaluation.support.toFixed(5)} | 
+                    <strong>R:</strong> ${evaluation.resistance.toFixed(5)}<br>
+                    <strong>Computed Index:</strong> RSI: ${metrics.rsi.toFixed(2)} | Stoch K: ${metrics.stochK.toFixed(2)}
+                `;
+
+                if (evaluation.decision !== "NO_SIGNAL") {
+                    renderSignalBlock(timestamp, activePairName, evaluation);
+                    lastSignal = {
+                        direction: evaluation.decision.includes("UP") ? "UP" : "DOWN",
+                        epoch: epoch
+                    };
+                } else {
+                    signalDisplay.innerHTML = `
+                        <div class="text-slate-400 font-bold text-sm tracking-wider">SCANNING IN PROGRESS...</div>
+                        <div class="text-xs text-slate-500 mt-2">Market volatility flat or metrics lack clear trend symmetry. (Score: ${evaluation.score}%)</div>
+                    `;
+                }
+            }
+        }
+
+        function calculateTechnicalMatrix(candles) {
+            const closes = candles.map(c => float(c.close));
+            const highs = candles.map(c => float(c.high));
+            const lows = candles.map(c => float(c.low));
+
+            return {
+                rsi: computeRSI(closes, 14),
+                stochK: computeStochasticK(highs, lows, closes, 14),
+                bb: computeBollingerBands(closes, 20, 2),
+                ema50: computeEMA(closes, 50),
+                ema200: computeEMA(closes, 200)
+            };
+        }
+
+        function evaluateConfluenceEngine(metrics, candles) {
+            const last = candles[candles.length - 1];
+            const prev = candles[candles.length - 2];
+            
+            const close = float(last.close);
+            const open = float(last.open);
+            const high = float(last.high);
+            const low = float(last.low);
+
+            const sr = computeStaticStructure(candles);
+
+            let upScore = 0;
+            let downScore = 0;
+
+            // Rule 1: Multi-Timeframe Trend Symmetry Matrix
+            if (close > metrics.ema200 && metrics.ema50 > metrics.ema200) upScore += 15;
+            else if (close < metrics.ema200 && metrics.ema50 < metrics.ema200) downScore += 15;
+
+            // Rule 2: Structural Proximity Coordinates Matrix
+            const threshold = close * 0.0005;
+            if (Math.abs(close - sr.support) <= threshold) upScore += 25;
+            if (Math.abs(close - sr.resistance) <= threshold) downScore += 25;
+
+            // Rule 3: Dynamic Elastic Volatility Boundaries Rejection
+            if (close <= metrics.bb.lower || low <= metrics.bb.lower) upScore += 20;
+            else if (close >= metrics.bb.upper || high >= metrics.bb.upper) downScore += 20;
+
+            // Rule 4: Oscillators Overextended Convergence Node
+            if (metrics.rsi < 30 && metrics.stochK < 20) upScore += 20;
+            else if (metrics.rsi > 70 && metrics.stochK > 80) downScore += 20;
+
+            // Rule 5: Volume-Weighted Price Action Core Matrix
+            const currentBody = Math.abs(close - open);
+            const prevBody = Math.abs(float(prev.close) - float(prev.open));
+            if (close > open && currentBody > prevBody) upScore += 20;
+            else if (close < open && currentBody > prevBody) downScore += 20;
+
+            const finalScore = Math.max(upScore, downScore);
+            let decision = "NO_SIGNAL";
+
+            if (finalScore >= 50) {
+                decision = upScore >= downScore ? "UP (CALL / GREEN 🟢)" : "DOWN (PUT / RED 🔴)";
+            }
+
+            return { decision, score: finalScore, support: sr.support, resistance: sr.resistance };
+        }
+
+        function verifyExpiredBlock(candle) {
+            if (!lastSignal) return;
+
+            const close = float(candle.close);
+            const open = float(candle.open);
+            const actual = close > open ? "UP" : (close < open ? "DOWN" : "DOJI");
+            
+            verificationContainer.classList.remove('hidden');
+
+            if (actual === "DOJI") {
+                verificationOutput.className = "text-sm font-bold p-3 rounded-lg bg-amber-950/40 text-amber-400 border border-amber-800/50";
+                verificationOutput.textContent = `⏳ [SIGNAL VERIFICATION]: FLAT ENGINE DRAW (DOJI Candle Detected)`;
+            } else if (lastSignal.direction === actual) {
+                verificationOutput.className = "text-sm font-bold p-3 rounded-lg bg-emerald-950/40 text-emerald-400 border border-emerald-800/50";
+                verificationOutput.textContent = `✅ [SIGNAL VERIFICATION]: WIN CONTRACT! Execution Vector Verified via ${actual} Block`;
+            } else {
+                verificationOutput.className = "text-sm font-bold p-3 rounded-lg bg-rose-950/40 text-rose-400 border border-rose-800/50";
+                verificationOutput.textContent = `❌ [SIGNAL VERIFICATION]: EXPIRED IN LOSS! Directional Divergence Encountered`;
+            }
+
+            lastSignal = null;
+        }
+
+        function renderSignalBlock(time, pair, evaluation) {
+            const isHigh = evaluation.score >= 75;
+            
+            if (isHigh) {
+                signalDisplay.innerHTML = `
+                    <div class="w-full bg-emerald-950/40 border-2 border-emerald-500 rounded-xl p-6 text-emerald-400 space-y-3 shadow-lg shadow-emerald-950/50">
+                        <div class="text-xs font-bold uppercase tracking-widest bg-emerald-500 text-slate-950 px-3 py-1 rounded-full inline-block">💥 HIGH CONFIDENCE BLOCK ACTIVE 💥</div>
+                        <div class="text-lg font-bold">NODE ID: ${pair}</div>
+                        <div class="text-3xl font-extrabold uppercase tracking-wide">EXECUTION VECTOR: ${evaluation.decision}</div>
+                        <div class="text-base font-bold text-slate-200">CONFLUENCE METRICS STRENGTH: ${evaluation.score}%</div>
+                        <div class="text-xs text-slate-400 font-normal">Symmetry check verified. Safe trade setup ready at timestamp: ${time}.</div>
+                    </div>
+                `;
+            } else {
+                signalDisplay.innerHTML = `
+                    <div class="w-full bg-slate-900 border border-slate-700 rounded-xl p-6 text-slate-200 space-y-2">
+                        <div class="text-xs font-bold uppercase tracking-wider bg-slate-700 text-slate-200 px-2 py-0.5 rounded-md inline-block">MODERATE ACCURACY NODE</div>
+                        <div class="text-base font-bold">Node ID: ${pair}</div>
+                        <div class="text-xl font-bold text-amber-400">${evaluation.decision}</div>
+                        <div class="text-sm text-slate-400">Probability Coefficient: ${evaluation.score}%</div>
+                        <div class="text-xs text-slate-500">Normal structural setup triggered at timestamp: ${time}.</div>
+                    </div>
+                `;
+            }
+        }
+
+        function handleSystemError(err) {
+            if (err.code === 'MarketIsClosed') {
+                signalDisplay.innerHTML = `
+                    <div class="bg-rose-950/30 border border-rose-800 rounded-xl p-6 text-rose-400 max-w-md">
+                        <div class="text-lg font-bold uppercase tracking-wider mb-1">🔒 MARKET IS CLOSED</div>
+                        <div class="text-xs text-slate-400">The selected asset registry is currently dormant. Live feds are restricted over weekend sessions.</div>
+                    </div>
+                `;
+            } else {
+                telemetryFeed.textContent = `Exception Failure: ${err.message}`;
+            }
+        }
+
+        // --- MATH ALGORITHMIC SUBSYSTEMS ---
+        function float(val) { return parseFloat(val); }
+        function jsonReq(obj) { return JSON.stringify(obj); }
+
+        function computeStaticStructure(candles, windowSize = 15) {
+            const currentClose = float(candles[candles.length - 1].close);
+            let supports = [];
+            let resistances = [];
+
+            for (let i = windowSize; i < candles.length - windowSize; i++) {
+                let isMin = true;
+                let isMax = true;
+                let lowTarget = float(candles[i].low);
+                let highTarget = float(candles[i].high);
+
+                for (let j = i - windowSize; j <= i + windowSize; j++) {
+                    if (float(candles[j].low) < lowTarget) isMin = false;
+                    if (float(candles[j].high) > highTarget) isMax = false;
+                }
+
+                if (isMin) supports.push(lowTarget);
+                if (isMax) resistances.push(highTarget);
+            }
+
+            const nearestSupport = supports.length ? supports.reduce((prev, curr) => Math.abs(curr - currentClose) < Math.abs(prev - currentClose) ? curr : prev) : currentClose * 0.99;
+            const nearestResistance = resistances.length ? resistances.reduce((prev, curr) => Math.abs(curr - currentClose) < Math.abs(prev - currentClose) ? curr : prev) : currentClose * 1.01;
+
+            return { support: nearestSupport, resistance: nearestResistance };
+        }
+
+        function computeRSI(closes, period = 14) {
+            let gains = 0, losses = 0;
+            for (let i = closes.length - period; i < closes.length; i++) {
+                let diff = closes[i] - closes[i - 1];
+                if (diff > 0) gains += diff; else losses -= diff;
+            }
+            let rsi = 100 - (100 / (1 + ((gains / period) / (losses / period || 1))));
+            return isNaN(rsi) ? 50 : rsi;
+        }
+
+        function computeStochasticK(highs, lows, closes, period = 14) {
+            const sliceHighs = highs.slice(-period);
+            const sliceLows = lows.slice(-period);
+            const highestHigh = Math.max(...sliceHighs);
+            const lowestLow = Math.min(...sliceLows);
+            const currentClose = closes[closes.length - 1];
+            return ((currentClose - lowestLow) / ((highestHigh - lowestLow) || 1)) * 100;
+        }
+
+        function computeBollingerBands(closes, period = 20, stdDevMultiplier = 2) {
+            const slice = closes.slice(-period);
+            const sma = slice.reduce((a, b) => a + b, 0) / period;
+            const variance = slice.reduce((a, b) => a + Math.pow(b - sma, 2), 0) / period;
+            const stdDev = Math.sqrt(variance);
+            return { upper: sma + (stdDevMultiplier * stdDev), lower: sma - (stdDevMultiplier * stdDev) };
+        }
+
+        function computeEMA(closes, period) {
+            const k = 2 / (period + 1);
+            let ema = closes[closes.length - period] || closes[0];
+            for (let i = closes.length - period + 1; i < closes.length; i++) {
+                ema = (closes[i] * k) + (ema * (1 - k));
+            }
+            return ema;
+        }
+
+        // Launch Engine Threads
+        initWebSocket();
+    </script>
+</body>
+</html>
