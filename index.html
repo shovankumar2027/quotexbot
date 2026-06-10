@@ -85,7 +85,7 @@
         }, 1000);
 
         function initWebSocket() {
-            ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${CONFIG.APP_ID}`);
+            ws = new WebSocket(`wss://api.derivws.com/websockets/v3?app_id=${CONFIG.APP_ID}`);
 
             ws.onopen = () => {
                 connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-blue-500"></span> Authorizing Access Token...`;
